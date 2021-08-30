@@ -1,0 +1,14 @@
+{
+	"authors": [
+		"toad"
+	],
+	"copyright": "Copyright © 2021, toad",
+	"dependencies": {
+		"llvm-d": "~>3.0.0",
+		"pegged": "~>0.4.5"
+	},
+	"description": "minimal language",
+	"license": "proprietary",
+	"name": "imiv",
+  "libs": ["LLVM", "LTO"]
+}

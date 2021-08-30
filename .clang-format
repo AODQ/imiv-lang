@@ -1,0 +1,16 @@
+---
+Language: Cpp
+BasedOnStyle: Webkit
+UseTab: ForIndentation
+DerivePointerAlignment: false
+ColumnLimit: 80
+AlignAfterOpenBracket: AlwaysBreak
+AlignConsecutiveAssignments: Consecutive
+AlignEscapedNewlines: Left
+AlignOperands: AlignAfterOperator
+AlignTrailingComments: true
+AllowAllArgumentsOnNextLine: false
+AllowShortIfStatementsOnASingleLine: Never
+BreakStringLiterals: false
+PointerAlignment: Middle
+---

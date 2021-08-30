@@ -1,0 +1,103 @@
+
+# [value msgcontents : [fee fee]]
+
+[+ a b];
+
+#mapOrigin := Fn : void {
+#	|a : int, b : int,|
+#
+#  ret [+ a b];
+#};
+
+#[imiv println msg:{"hello world forever!", "and ever!",}];
+#[imiv println]; # empty line
+#[imiv println msg:"hello world"];
+#
+## type unnecessary
+#x := "hello world";
+#y : String := "hello world";
+#
+## note that basic units can not be arrays, ei there is no float[] or char[],
+## 	instead, they can only be scalars. Since each object is an array of
+## 	objects, the correct way to go about this is to wrap these types in a
+## 	struct
+#
+#[imiv println:x];
+#
+#circle := Struct {
+#	radius : float;
+#	originX : float;
+#	originY : float;
+#
+#	# remember that what you are getting here is not one instance of circle,
+#	# it is a whole array of circles
+#	averageDistance := Fn : float {
+#		|self : circle|
+#
+#		ret [
+#			reduce
+#				array:  [self radius]
+#				lambda: [|f0 : float, f1 : float | ret [+ f0 f1]]
+#		];
+#	};
+#
+#	moveOrigin := Fn : void {
+#		|self : circle, originX : float, originY : float|
+#
+#		# the for loop will unroll/inline the lambda, if this is not wanted
+#		# then you could use `forIndirect` i guess?
+#		ret [
+#			for
+#				array: self
+#				lambda: [|inst| [inst originX] :+= originX; [inst originY] :+= originY;]
+#		];
+#	};
+#
+#	mapOrigin := Fn : void {
+#		|self : circle, mapper : ^|originX:float, originY:float||
+#
+#		ret [
+#			for
+#				array: self
+#				lambda: [
+#					| inst | [mapper originX: [inst originX] originY: [inst originY]]
+#				]
+#		];
+#	};
+#
+#
+#	Color := Struct {
+#		red : float;
+#		green : float;
+#		blue : float;
+#	};
+#
+#	color : Color;
+#};
+#
+#rectangle := Struct {
+#	radius : float;
+#};
+#
+#testCircles : circle := [imiv allocate::circle length:50];
+#testRects   : rectangle := [imiv allocate::rectangle length:10];
+#
+#[
+#	forWithIterator
+#		array: testCircles
+#		lambda: [
+#			| it : size_t, inst |
+#			
+#			[inst originX] := [imiv cast from:it to:float];
+#			[inst originY] := [imiv cast from:[+ it 20] to:float];
+#		]
+#];
+#
+#[imiv printf msg:[testCircle averageDistance]]; # self passed in automatically
+#
+## or can be static
+#[testCircle averageDistance:[allocator withType:circle length:100]];
+#
+## and can pass anything you want in as long as it satisfies the same kind of
+##     kind of restraints used in the function
+#[circle averageDistance:testRects];

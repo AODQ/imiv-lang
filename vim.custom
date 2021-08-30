@@ -1,0 +1,5 @@
+
+function! MakeprgRelease()
+  let &makeprg = 'dub build'
+  make
+endfunction
