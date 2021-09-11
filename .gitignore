@@ -1,0 +1,15 @@
+.dub
+docs.json
+__dummy.html
+docs/
+/imiv
+imiv.so
+imiv.dylib
+imiv.dll
+imiv.a
+imiv.lib
+imiv-test-*
+*.exe
+*.o
+*.obj
+*.lst

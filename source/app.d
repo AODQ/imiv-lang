@@ -12,11 +12,12 @@ import util;
 mixin(grammar(`
 	PeggedGrammarImiv:
 
-		CodeBlock < ((Message +) / Assignment)
+		CodeBlock < (CodeBlockStatement)+
+		CodeBlockStatement < (Function / Message / Assignment / ReturnStatement)
 
-		Message < "[" (Variable / Operator) (Request)* "];"
+		Message < "[" (Variable / Operator) (Spacing Request)+ "];"
 
-    AssignmentEq < ":="
+		AssignmentEq < ":="
 
 		AssignmentKind < AssignmentEq
 
@@ -24,17 +25,19 @@ mixin(grammar(`
 
 		TypeNotation < ":" Variable
 
-		Integral < ~([0-9]+)
+		Integral <- ([0-9]+)
 		StringLiteral <~ doublequote (!doublequote .)* doublequote
 		Sign <- ('+'/'-')
 		Integer <- Sign? Integral
-		Float <- Sign? Integral '.' Integral 'f'
-		Variable <- (alpha / Alpha) (alpha / Alpha / Operator / Integral)*
+		Float <~ Sign? Integral '.' Integral 'f'
+		Variable <- (alpha / Alpha) (alpha / Alpha)*
 		Operator <- ("+" / "-" / "*" / "/" / "<")
+		Type <- Variable
+		ReturnStatement < 'ret' Message
 
 
-    Params <- '|' (Variable ':' Variable ',')+ '|'
-    Function <- Variable AssignmentEq 'Fn' ':' Variable '{' Params CodeBlock '}' ';'
+		Params < '|' (Variable ':' Type ',')+ '|'
+		Function <- Variable AssignmentEq Type Params '{' CodeBlock '}' ';'
 
 		Array < "{" (Atom ",")* "}"
 
@@ -42,7 +45,7 @@ mixin(grammar(`
 			Array / Integer / Float / Variable / Operator / Message / StringLiteral
 		)
 
-		Request < (Variable) (':' (Atom))?
+		Request < (Variable / Integer) (TypeNotation)?
 `));
 
 
@@ -52,147 +55,21 @@ void LogAssert(T...)(bool condition, string error, T params) {
 	exit(0);
 }
 
-string ImivBuiltInPrint(ImivMessage message, const(ImivClass) * environment) {
-	import std.format, std.sumtype, std.conv;
-
-	static ImivObject printfRecursive = ImivObject();
-
-	string str = "\n{ // -- printf\n";
-
-	foreach (atom ; message.contents) {
-		str ~= atom.value.match!(
-			(ImivObject * object) => "N/A",
-			(ImivClass * iclass) => "N/A",
-			(ImivNil nil) => "", // just wants empty line
-			(ImivFunction f) => "N/A",
-			(ImivMessage msg) {
-				return "
-					{
-						auto const ___printf_x = %s;
-						printf(\"%s\", ___printf_x);
-					}
-				".format(
-					TranspileAtomToExpression(atom, environment, false)
-				);
-			},
-			(ImivValue value) {
-				const string i = value.value.match!(
-					(int i)    => i.to!string,
-					(float i)  => i.to!string,
-					(string i) => i.to!string,
-				);
-
-				return "printf(\"%%s\", %s);".format(i);
-			},
-			(ImivAtom[] atoms) {
-				string str;
-				foreach (atom ; atoms) {
-					ImivMessage fakeMsg = {
-						receiver : &printfRecursive,
-						signature : ["printf"],
-						contents : [atom],
-					};
-					str ~= ImivBuiltInPrint(fakeMsg, environment);
-				}
-				return str;
-			},
-		);
-	}
-
-	if (&printfRecursive != message.receiver) {
-		str ~= "printf(\"\\n\");";
-	}
-	return str ~ "\n}\n";
-}
-
-struct ImivFunction {
-
-	std.typecons.Tuple!(string, bool /*someplace in memory*/)[] messages;
-
-	bool isBuiltInFunction = false;
-	string function(ImivMessage, const(ImivClass) *) builtInFunction;
-};
-
-struct ImivValue {
-	std.sumtype.SumType!(int, float, string) value;
-
-	this(T)(T v) { value = v; }
-};
-
-struct ImivClass {
-	ImivClass * parentclass;
-	ImivClass[string] subclasses;
-	ImivObject[string] variables;
-	ImivFunction[string] functions;
-	string label;
-};
-
-ImivAtom ImivAtomSymbolLookup(
-	ImivClass * environment,
-	immutable string symbolLabel
-) {
-	assert(environment);
-
-	// look through variables first
-	foreach (symbol, ref value; environment.variables) {
-		if (symbol == symbolLabel) { return ImivAtom(&value); }
-	}
-
-	// finally look through parent
-	if (environment.parentclass)
-		return ImivAtomSymbolLookup(environment.parentclass, symbolLabel);
-
-	return ImivAtom(ImivNil());
-}
-
-inout (ImivClass) * ImivClassLookup(
-	inout(ImivClass) * environment,
-	immutable string classLabel
-) {
-	assert(environment);
-	std.stdio.writefln("comparing %s and %s", environment.label, classLabel);
-	if (environment.label == classLabel)
-		return environment;
-
-	if (environment.parentclass)
-		return ImivClassLookup(environment.parentclass, classLabel);
-
-	return null;
-}
-
-struct ImivObject {
-	ImivValue[string] variables;
-
-	string label;
-	ImivClass * objectClass;
-};
-
-struct ImivMessage {
-	ImivObject * receiver;
-	string[] signature;
-	ImivAtom[] contents; // contents & labels must match
-};
-
-inout(string) FunctionLabelsJoiner(inout(string[]) labels) {
-	import std.algorithm;
-	import std.array;
-	import std.conv;
-
-	return labels.dup.joiner("___").array.to!string;
-};
-
 struct ImivNil {};
 
 struct ImivAtom {
 	import std.variant;
 	std.sumtype.SumType!(
-		ImivObject *,
-		ImivClass *,
+		GenericValue,
+		Value,
 		ImivNil,
-		ImivFunction,
-		ImivMessage,
-		ImivValue,
-		ImivAtom[]
+		/* ImivObject *, */
+		/* ImivClass *, */
+		/* ImivNil, */
+		/* ImivFunction, */
+		/* ImivMessage, */
+		/* ImivValue, */
+		ImivAtom[],
 	) value;
 
 	this (ImivAtom[] list) {
@@ -202,48 +79,14 @@ struct ImivAtom {
 	this(T)(T t) {
 		value = t;
 	}
+
+	Value asValue() {
+		import std.sumtype;
+		Value v;
+		this.value.tryMatch!((Value val) => v = val);
+		return v;
+	}
 };
-
-string ImivToDebugString(ImivAtom atom)
-{
-	import std.sumtype, std.conv;
-
-	return atom.value.match!(
-		(ImivObject * object)
-			=> "(object '" ~ object.label ~ "' {" ~ object.objectClass.label ~ "}",
-		(ImivClass * iclass) => "(class '" ~ iclass.label ~ "')",
-		(ImivNil nil) => "(nil)",
-		(ImivFunction func) => "(function)",
-		(ImivMessage msg) {
-			string str;
-			assert(msg.receiver);
-			str ~= "(message: '" ~ msg.receiver.label ~ "'";
-			for (size_t it = 0; it < msg.signature.length; ++ it) {
-				str ~=
-					  " " ~ msg.signature[it]
-					~ ":" ~ ImivToDebugString(msg.contents[it])
-				;
-			}
-			str ~= ")";
-			return str;
-		},
-		(ImivValue value) {
-			return value.value.match!(
-				(int i)    => i.to!string,
-				(float i)  => i.to!string,
-				(string i) => i,
-			);
-		},
-		(ImivAtom[] atoms) {
-			string str;
-			str ~= "(list [";
-			foreach (newAtom; atoms)
-				str ~= ImivToDebugString(newAtom) ~ ", ";
-			str ~= "])";
-			return str;
-		}
-	);
-}
 
 auto ToString(T)(T t) {
 	import std.algorithm;
@@ -252,15 +95,31 @@ auto ToString(T)(T t) {
 	return t.dup.joiner.array.to!string;
 }
 
+struct Context {
+	Function func;
+	InstructionBlock instrBlock;
+	Module modul;
+	Value[string] namedValues;
+
+	Value getNamedValue(string val) {
+		auto value = val in this.namedValues;
+		if (!value)
+			std.writefln("unknown value: '%s'", val);
+		return *value;
+	}
+};
+
 ImivAtom ComputeContents(T)(
 	const(T) grammar,
-	ImivClass * environment,
-	immutable bool verbose
+	Context ctx,
+	immutable bool verbose,
 ) {
 	import std.algorithm;
 	import std.array;
 	import std.conv;
 	import std.sumtype;
+
+	std.stdio.writefln("processing: %s", grammar.name);
 
 	switch (grammar.name) {
 		default:
@@ -268,151 +127,149 @@ ImivAtom ComputeContents(T)(
 				"WARNING: unknown grammar name: '" ~ grammar.name ~ "'"
 			);
 			assert(false);
-		case "PeggedGrammarImiv":
-		case "PeggedGrammarImiv.CodeBlock":
-		case "PeggedGrammarImiv.Array":
-		case "PeggedGrammarImiv.Atom": {
-			ImivAtom[] atoms;
-			foreach (elem; grammar.children[0..$])
-				atoms ~= ComputeContents(elem, environment, verbose);
-			return ImivAtom(atoms);
-		}
-		case "PeggedGrammarImiv.Message": {
-			ImivMessage message;
+		case "PeggedGrammarImiv.Integer":
+			auto integer = grammar.matches[0..$].ToString.to!int;
+			return ImivAtom(createValue(integer));
 
-			// get the object that will receive the message
-			auto receiverObject =
-				ComputeContents(grammar.children[0], environment, verbose)
+		case "PeggedGrammarImiv.ReturnStatement":
+			auto retValue =
+				ComputeContents(
+					grammar.children[0], ctx, verbose
+				)
 			;
+			Value value;
+			retValue.value.tryMatch!((Value value_) => value = value_);
+			ctx.instrBlock.buildRet(value);
+		break;
 
-			receiverObject.value.tryMatch!(
-				(ImivObject * o) => message.receiver = o
-			);
+		case "PeggedGrammarImiv.Function":
+			util.FunctionCreateInfo funcCreateInfo = {
+				returnType : util.Type.i32,
+				parameters: [util.Type.i32, util.Type.i32],
+				label : "add"
+			};
+			auto newFunc = createFunction(ctx.modul, funcCreateInfo);
+			auto newInstrBlock = InstructionBlock.append(newFunc, "entry");
+			auto codeBlock = grammar.children[4];
 
-			// get the contents of the message to be received
-			foreach (elem; grammar.children[1..$]) {
+			Value[string] newNamedValues;
 
-				immutable auto label = elem.children[0].matches[0..$].ToString;
-
-				message.signature ~= label;
-
-				// check if no value was passed into parameter
-				if (elem.children.length == 1) {
-					message.contents ~= ImivAtom(ImivNil());
-					continue;
-				}
-
-				// variable was passed in
-				message.contents ~=
-					ComputeContents(elem.children[1], environment, verbose);
+			// add parameters from the function to named values lookup
+			for (uint it = 0; it < newFunc.getParameterLength(); ++ it) {
+				auto label = grammar.children[3].children[it*2].matches[0..$].ToString;
+				std.writefln("label parameter: %s", label);
+				newNamedValues[label] = newFunc.getParameter(it);
 			}
 
-			return ImivAtom(message);
+			// create a new context for this function
+			Context newCtx = {
+				func : newFunc,
+				instrBlock : newInstrBlock,
+				modul : ctx.modul,
+				namedValues : newNamedValues
+			};
+			ComputeContents(codeBlock, newCtx, verbose);
+		break;
+
+		case "PeggedGrammarImiv.Request":
+			return ComputeContents(grammar.children[0], ctx, verbose);
+
+		case "PeggedGrammarImiv":
+		case "PeggedGrammarImiv.CodeBlock":
+		case "PeggedGrammarImiv.CodeBlockStatement":
+		case "PeggedGrammarImiv.Array":
+		case "PeggedGrammarImiv.Atom": {
+			foreach (elem ; grammar.children[0..$]) {
+				auto results = ComputeContents(elem, ctx, verbose);
+				//results.tryMatch!(
+				//	(Value val) {
+				//		
+				//	},
+				//);
+				//this.value.tryMatch!((Value val) => v = val);
+				//if (val
+			}
+			/* ImivAtom[] atoms; */
+			/* foreach (elem; grammar.children[0..$]) */
+			/* 	atoms ~= ComputeContents(elem, verbose); */
+			/* return ImivAtom(atoms); */
+		}
+		break;
+
+		case "PeggedGrammarImiv.Message": {
+
+			// assume + lol...
+			std.writefln("params: %d", ctx.func.getParameterLength);
+			auto label = grammar.children[0].matches[0..$].ToString;
+			if (label == "+") {
+				auto val0 = ctx.getNamedValue(grammar.children[1].matches[0..$].ToString);
+				auto val1 = ctx.getNamedValue(grammar.children[2].matches[0..$].ToString);
+				return ImivAtom(ctx.instrBlock.buildAdd(val0, val1, "+"));
+			} else {
+				auto callFunc = ctx.modul.getFunction(label);
+				if (!callFunc.value) {
+					std.writefln("could not get function from label '%s'", label);
+				}
+				auto callValue = 
+					ctx.instrBlock.buildCall(
+						callFunc,
+						grammar
+							.children[1..$]
+							.map!(
+								n =>
+									ComputeContents(n, ctx, verbose).asValue
+							)
+							.array,
+						"return-call-" ~ label
+					)
+				;
+				std.writefln("building call... %s", callValue);
+				return ImivAtom(callValue);
+			}
+
+			//if (
+			/* ImivMessage message; */
+
+			/* // get the object that will receive the message */
+			/* auto receiverObject = */
+			/* 	ComputeContents(grammar.children[0], verbose) */
+			/* ; */
+
+			/* receiverObject.value.tryMatch!( */
+			/* 	(ImivObject * o) => message.receiver = o */
+			/* ); */
+
+			/* // get the contents of the message to be received */
+			/* foreach (elem; grammar.children[1..$]) { */
+
+			/* 	immutable auto label = elem.children[0].matches[0..$].ToString; */
+
+			/* 	message.signature ~= label; */
+
+			/* 	// check if no value was passed into parameter */
+			/* 	if (elem.children.length == 1) { */
+			/* 		message.contents ~= ImivAtom(ImivNil()); */
+			/* 		continue; */
+			/* 	} */
+
+			/* 	// variable was passed in */
+			/* 	message.contents ~= */
+			/* 		ComputeContents(elem.children[1], verbose); */
+			/* } */
+
+			/* return ImivAtom(message); */
 		}
 
 		case "PeggedGrammarImiv.Operator":
 		case "PeggedGrammarImiv.Variable":
-			return ImivAtomSymbolLookup(environment, grammar.matches[0..$].ToString);
+			return ImivAtom(ctx.getNamedValue(grammar.matches[0..$].ToString));
 
 		case "PeggedGrammarImiv.StringLiteral":
-			return ImivAtom(ImivValue(grammar.matches[0..$].ToString));
+			/* return ImivAtom(ImivValue(grammar.matches[0..$].ToString)); */
+		break;
 	}
 
-	assert(false);
-}
-
-ImivClass * DefaultEnvironment() {
-	ImivClass * environment = new ImivClass; // best be on heap
-	environment.label = "___ImivEnvironment";
-	environment.parentclass = null;
-
-	ImivClass subclass;
-	subclass.label = "___Imiv";
-	subclass.parentclass = environment;
-	subclass.functions["println"] = ImivFunction();
-	subclass.functions["println"].isBuiltInFunction = true;
-	subclass.functions["println"].builtInFunction = &ImivBuiltInPrint;
-	environment.subclasses[subclass.label] = subclass;
-
-	ImivObject instance;
-	instance.objectClass = &environment.subclasses[subclass.label];
-	instance.label = "imiv";
-	environment.variables["imiv"] = instance;
-
-	return environment;
-}
-
-string TranspileAtomToExpression(
-	ref ImivAtom atom,
-	const(ImivClass) * environment,
-	bool verbose
-) {
-	import std.sumtype, std.conv;
-
-	return atom.value.match!(
-		(ImivObject * object) => object.label,
-		(ImivClass * iclass) => "",//??,
-		(ImivNil nil) => "",//???
-		(ImivFunction func) => "",//put in function declaration
-		(ImivMessage msg) {
-			assert(msg.receiver);
-
-			const(ImivClass) * msgClass = msg.receiver.objectClass;
-			assert(msgClass);
-
-			const(ImivFunction) * func =
-				msg.signature.FunctionLabelsJoiner in msgClass.functions
-			;
-			assert(func);
-
-			if (func.isBuiltInFunction) {
-				return func.builtInFunction(msg, environment);
-			}
-
-			return "";
-		},
-		(ImivValue value) {
-			import std.conv;
-
-			return value.value.match!(
-				(int i)    => i.to!string,
-				(float i)  => i.to!string,
-				(string i) => i.to!string,
-			);
-		},
-		(ImivAtom[] atoms) {
-			std.stdio.writefln("atoms: %s" , ImivToDebugString(ImivAtom(atoms)));
-			string str;
-			str ~= "{ ";
-			foreach (newAtom; atoms)
-				str ~= TranspileAtomToExpression(newAtom, environment, verbose) ~ "; ";
-			str ~= "}";
-			return str;
-		},
-	);
-}
-
-string TranspileProgram(
-	ref ImivAtom program,
-	const(ImivClass) * environment,
-	immutable bool verbose
-) {
-
-	import std.format;
-	return "
-		#include <stdio.h>
-		#include <stdint.h>
-		#include <string.h>
-
-		struct imiv {
-		};
-
-		int main() {
-			%s
-		}
-	".format(
-		TranspileAtomToExpression(program, environment, verbose)
-	);
+	return ImivAtom(ImivNil());
 }
 
 void EvaluateContents(
@@ -426,62 +283,45 @@ void EvaluateContents(
 		std.stdio.writefln("expanded expression:\n%s", expandedExpression);
 	}
 
-	auto environment = DefaultEnvironment();
-	scope(exit) environment.destroy();
+	auto modul = util.createModule("test-module");
+	util.FunctionCreateInfo defFunctionCreateInfo = {
+		returnType : util.Type.Void,
+		parameters : [],
+		label : "default-entry",
+	};
+	auto defFunc = createFunction(modul, defFunctionCreateInfo);
+	auto instrBlock = InstructionBlock.append(defFunc, "entry");
 
-	auto result = ComputeContents(expandedExpression, environment, verbose);
+	Context newCtx = {
+		func : defFunc,
+		instrBlock : instrBlock,
+		modul : modul,
+		namedValues : null
+	};
+	auto result = ComputeContents(expandedExpression, newCtx, verbose);
+  instrBlock.buildRetVoid();
 
-	if (verbose) {
-		std.stdio.writefln(
-			"computed expression:\n'''\n%s\n'''", ImivToDebugString(result)
-		);
-	}
+	modul.verify;
 
-	auto programString = TranspileProgram(result, environment, verbose);
+	auto engine = modul.createEngineJIT();
 
-	import std.process;
+	modul.WriteBitcode("out.bc");
 
-	std.file.write("test.c", programString);
-	auto gcc = std.process.execute(["gcc", "test.c"]);
+	auto value = engine.runFunction(defFunc, []);
 
-	if (gcc.status != 0) {
-		std.stdio.writefln(
-			"Compilation of the transpiled code failed:\n",
-			gcc.output
-		);
-		return;
-	}
+	std.writefln("results: %d", value.ToI32);
 
-	if (retainSourceFiles) {
-		std.process.execute(
-			["clang-format", "-i", "test.c", "-style=file"]
-		);
-	} else {
-		std.file.remove("test.c");
-	}
-
-	if (verbose) {
-		std.stdio.writefln("translated C code:\n'''");
-		std.stdio.write(std.process.execute(["cat", "test.c"]).output);
-		std.stdio.writefln("'''");
-	}
-
-	auto program = std.process.execute(["./a.out"]);
-	std.stdio.writefln("---- program output ----\n");
-	std.stdio.writef(program.output);
-
-	if (!retainSourceFiles)
-		std.file.remove("a.out");
+	std.writefln("exiting imiv");
 }
 
 string StripContents(immutable string expression, immutable bool verbose) {
-	auto const trailingWhitespace = std.regex.regex(r" *\n");
+	//auto const trailingWhitespace = std.regex.regex(r" *\n");
 	auto const comments = std.regex.regex(r"#.*\n");
 	auto const newExpression =
-		std.regex.replaceAll(
-			std.regex.replaceAll(expression, comments, ""),
-			trailingWhitespace, ""
-		)
+		//std.regex.replaceAll(
+			std.regex.replaceAll(expression, comments, "")
+			//trailingWhitespace, ""
+		//)
 	;
 	if (verbose) {
 		std.stdio.writefln("stripped contents:\n'%s'", newExpression);
@@ -508,18 +348,28 @@ void main(string[] args) {
 		return;
 	}
 
-//	auto fileContents = std.file.readText(filename);
-//	EvaluateContents(
-//		StripContents(fileContents, verbose),
-//		verbose,
-//		retainSourceFiles
-//	);
+	auto fileContents = std.file.readText(filename);
+	EvaluateContents(
+		StripContents(fileContents, verbose),
+		verbose,
+		retainSourceFiles
+	);
 
-  util.FunctionCreateInfo addFunctionCreateInfo = {
-    returnType : util.Type.i32,
-    parameters : [util.Type.i32, util.Type.i32],
-    label : "add",
-  };
-  auto mod = util.createModule("test-module");
-  auto func = createFunction(mod, addFunctionCreateInfo);
+  /* util.FunctionCreateInfo addFunctionCreateInfo = { */
+  /*   returnType : util.Type.i32, */
+  /*   parameters : [util.Type.i32, util.Type.i32], */
+  /*   label : "add", */
+  /* }; */
+  /* auto mod = util.createModule("test-module"); */
+  /* auto addFunc = createFunction(mod, addFunctionCreateInfo); */
+
+  /* auto instrBlock = InstructionBlock.append(addFunc, "entry"); */
+  /* instrBlock.buildRet( */
+  /*   instrBlock.buildAdd( */
+  /*     addFunc.getParameter(0), */
+  /*     addFunc.getParameter(1), */
+  /*     "tmp-add" */
+  /*   ) */
+  /* ); */
+
 }

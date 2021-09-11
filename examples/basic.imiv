@@ -1,7 +1,9 @@
 
-# [value msgcontents : [fee fee]]
+# [value msgcontents : [fee fee]] #
 
-[+ a b];
+
+sum := i32 | x : i32 , y : i32 , | { ret [+ x y]; };
+[sum 1 3];
 
 #mapOrigin := Fn : void {
 #	|a : int, b : int,|
