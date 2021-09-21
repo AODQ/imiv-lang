@@ -23,7 +23,7 @@ mixin(grammar(`
 
 		TypeModifier < ( "const" / "var" )
 
-		Assignment < (TypeModifier+) Variable AssignmentKind TypeNotation? '{' Atom '}'
+		Assignment < (TypeModifier)* Variable AssignmentKind TypeNotation? '{' Atom '}'
 
 		TypeNotation < Variable
 
@@ -38,7 +38,7 @@ mixin(grammar(`
 		ReturnStatement < 'ret' (Atom)
 
 
-		Params < '|' (Variable ':' Type ',')+ '|'
+		Params < '[' (Variable ':' Type ',')+ ']'
 		Function < "fn" Variable AssignmentEq Type Params '{' CodeBlock '}'
 
 		Array < "{" (Atom ",")* "}"
@@ -160,24 +160,41 @@ ImivAtom ComputeContents(T)(
 		case "PGI.Assignment":
 			// Assignment <
 			//   (TypeModifier+) Variable AssignmentKind TypeNotation? '{' Atom '}'
-			assert(grammar.children[0].name == "PGI.TypeModifier");
-			auto typeModifiers = grammar.children[0];
-			assert(grammar.children[1].name == "PGI.Variable");
-			auto variableLabel = grammar.children[1].matches[0..$].ToString;
-			assert(grammar.children[2].name == "PGI.AssignmentKind");
-			auto assignmentKind = grammar.children[2].matches[0..$].ToString;
-			// TODO this is option(spacing, typenotation, spacing) ...
-			assert(grammar.children[3].name == "PGI.TypeNotation");
-			std.writefln("type: %s", grammar.children[3]);
-			std.writefln("type1: %s", grammar.children[3].children[0]);
-			auto typeNotation =
-				grammar.children[3].children[0].matches[0..$].ToString
-			;
-			assert(grammar.children[4].name == "PGI.Atom");
-			auto results = ComputeContents(grammar.children[4], ctx, verbose);
+			auto it = 0;
+			bool isDeclaration = false;
+			auto typeModifiers = grammar.children[it];
+			if (grammar.children[it].name == "PGI.TypeModifier") {
+				isDeclaration = true;
+				++ it;
+			}
+			assert(grammar.children[it].name == "PGI.Variable");
+			auto variableLabel = grammar.children[it].matches[0..$].ToString;
+			++ it;
+
+			assert(grammar.children[it].name == "PGI.AssignmentKind");
+			auto assignmentKind = grammar.children[it].matches[0..$].ToString;
+			++ it;
+
+			bool hasTypeDeclaration = false;
+			string typeNotation = "";
+			if (grammar.children[it].name == "PGI.TypeNotation") {
+				hasTypeDeclaration = true;
+				std.writefln("type: %s", grammar.children[it]);
+				std.writefln("type1: %s", grammar.children[it].children[0]);
+				typeNotation =
+					grammar.children[it].children[0].matches[0..$].ToString
+				;
+				++ it;
+			}
+
+			std.writefln("grammar name: %s", grammar.children[it]);
+			assert(grammar.children[it].name == "PGI.Atom");
+			auto results = ComputeContents(grammar.children[it], ctx, verbose);
 
 			// -- see if we can assign
 			if (variableLabel in ctx.namedValues) {
+				std.writefln("found variable: '%s'", variableLabel);
+				assert(!isDeclaration, "variable shadowing: '" ~ variableLabel ~ "'");
 				assert(
 					typeModifiers.children.length == 0,
 					"declaration shadows existing var"
@@ -186,7 +203,10 @@ ImivAtom ComputeContents(T)(
 					ctx.namedValues[variableLabel],
 					results.asValue(ctx)
 				);
+				return ImivAtom(ctx.namedValues[variableLabel]);
 			}
+
+			std.writefln("will create variable: '%s'", variableLabel);
 
 			// -- create new variable
 			// allocate variable to stack
@@ -260,9 +280,6 @@ ImivAtom ComputeContents(T)(
 				namedValues : newNamedValues
 			};
 			ComputeContents(codeblock, newCtx, verbose);
-
-			// store into current context
-			//ctx.namedValues[
 		break;
 
 		case "PGI.Atom":
