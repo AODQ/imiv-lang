@@ -1,15 +1,26 @@
 module imiv_llvm;
 import llvm;
 import std;
+static import std;
 
-struct Module { LLVMModuleRef value; }
+import std.string : toStringz;
+
+struct Module {
+	LLVMModuleRef value;
+}
 
 Module createModule(string label) {
-	return Module(LLVMModuleCreateWithName(label.ptr));
+	return Module(LLVMModuleCreateWithName(label.toStringz));
+}
+
+void DumpModule(Module self) {
+	std.writefln("---- module dump --------------------------");
+	LLVMDumpModule(self.value);
+	std.writefln("-------------------------------------------");
 }
 
 Function getFunction(Module self, string label) {
-	auto value = LLVMGetNamedFunction(self.value, label.ptr);
+	auto value = LLVMGetNamedFunction(self.value, label.toStringz);
 	// TODO check value exists
 	return Function(value);
 }
@@ -57,12 +68,45 @@ GenericValue runFunction(Engine self, Function fn, GenericValue[] values) {
 
 enum Type {
 	i32,
-	Void
+	Void,
 };
+
+enum TypeModifier {
+	Const,
+	Variable,
+	Pointer,
+};
+
+TypeModifier toTypeModifier(string t) {
+	final switch (t) {
+		case "const": return TypeModifier.Const;
+		case "var": return TypeModifier.Variable;
+		case "*": return TypeModifier.Pointer;
+	}
+}
+
+struct RealType {
+	// int const * const ** (var ptr -> var ptr -> const ptr -> const int)
+	// would be typeModifiers : [ptr, ptr, const, ptr, const]
+	TypeModifier[] typeModifiers;
+	Type baseType;
+
+	// isVariable (not a register)
+	bool isVariable() { return typeModifiers.length > 0; }
+};
+
+Type toType(string type) {
+	switch (type) {
+		default:
+			assert(false, "could not convert '" ~ type ~ "' to type, unknown");
+		case "i32": return Type.i32;
+		case "void": return Type.Void;
+	}
+}
 
 private LLVMTypeRef toLlvmType(Type type) {
 	switch (type) {
-		default: assert(false);
+		default: assert(false, "could not convert type for: " ~ type.to!string);
 		case Type.i32: return LLVMInt32Type();
 		case Type.Void: return LLVMVoidType();
 	}
@@ -72,6 +116,18 @@ alias GenericValue = LLVMGenericValueRef;
 
 int ToI32(GenericValue value) {
 	return cast(int)LLVMGenericValueToInt(value, true);
+}
+
+Value ToConstI32(GenericValue value) {
+	return
+		Value(
+			LLVMConstInt(
+				toLlvmType(Type.i32),
+				cast(ulong)ToI32(value),
+				true
+			)
+		)
+	;
 }
 
 // TODO instead of using T specialize on Type
@@ -116,7 +172,7 @@ Function createFunction(ref Module mod, FunctionCreateInfo ci) {
 		Function(
 			LLVMAddFunction(
 				mod.value,
-				ci.label.ptr,
+				ci.label.toStringz,
 
 				LLVMFunctionType(
 					ci.returnType.toLlvmType,
@@ -132,17 +188,19 @@ Function createFunction(ref Module mod, FunctionCreateInfo ci) {
 struct InstructionBlock {
 	LLVMBasicBlockRef block;
 	LLVMBuilderRef builder;
+	int labelCounter = 0;
 
-	static InstructionBlock append
-	(T)
-	(
-		ref T value,
-		string label
-	)
+	immutable(char) * nextLabel() {
+		auto label = std.conv.to!string(labelCounter);
+		labelCounter += 1;
+		return std.string.toStringz(label);
+	}
+
+	static InstructionBlock append(T)(ref T value, string label)
 		if (is(typeof(T.value) == LLVMValueRef))
 	{
 		InstructionBlock ib = {
-			block : LLVMAppendBasicBlock(value.value, label.ptr),
+			block : LLVMAppendBasicBlock(value.value, label.toStringz),
 			builder : LLVMCreateBuilder,
 		};
 		LLVMPositionBuilderAtEnd(ib.builder, ib.block);
@@ -152,12 +210,54 @@ struct InstructionBlock {
 
 struct Value {
 	LLVMValueRef value;
+	RealType type;
 };
 
-Value buildAdd(
-	ref InstructionBlock ib, Value v0, Value v1, string label
-) {
-	return Value(LLVMBuildAdd(ib.builder, v0.value, v1.value, label.ptr));
+Type typeOf(Value value) {
+	if (LLVMTypeOf(value.value) == LLVMInt32Type())
+		return Type.i32;
+	if (LLVMTypeOf(value.value) == LLVMVoidType())
+		return Type.Void;
+	assert(false, "Could not get the type of value unknown");
+}
+
+enum OpEnum {
+	AddInt, SubInt, DivInt, MulInt,
+	AddFlt, SubFlt, DivFlt, MulFlt,
+};
+
+OpEnum strToBuildOp(string op, bool isFloat) {
+	switch (op) {
+		default: assert(false, "unknown op: '" ~ op ~ "'");
+		case "+": return isFloat ? OpEnum.AddFlt : OpEnum.AddInt;
+		case "-": return isFloat ? OpEnum.SubFlt : OpEnum.SubInt;
+		case "*": return isFloat ? OpEnum.MulFlt : OpEnum.MulInt;
+		case "/": return isFloat ? OpEnum.DivFlt : OpEnum.DivInt;
+	}
+}
+
+Value buildOp(ref InstructionBlock ib, OpEnum op, Value v0, Value v1) {
+	assert(v0.value, "nil v0");
+	assert(v1.value, "nil v1");
+	final switch (op) {
+		case OpEnum.AddInt:
+			return Value(LLVMBuildAdd(ib.builder, v0.value, v1.value, ib.nextLabel));
+		case OpEnum.SubInt:
+			return Value(LLVMBuildSub(ib.builder, v0.value, v1.value, ib.nextLabel));
+		case OpEnum.MulInt:
+			return Value(LLVMBuildMul(ib.builder, v0.value, v1.value, ib.nextLabel));
+		case OpEnum.DivInt:
+			return Value(LLVMBuildSDiv(ib.builder, v0.value, v1.value, ib.nextLabel));
+
+		case OpEnum.AddFlt:
+			return Value(LLVMBuildFAdd(ib.builder, v0.value, v1.value, ib.nextLabel));
+		case OpEnum.SubFlt:
+			return Value(LLVMBuildFSub(ib.builder, v0.value, v1.value, ib.nextLabel));
+		case OpEnum.MulFlt:
+			return Value(LLVMBuildFMul(ib.builder, v0.value, v1.value, ib.nextLabel));
+		case OpEnum.DivFlt:
+			return Value(LLVMBuildFDiv(ib.builder, v0.value, v1.value, ib.nextLabel));
+	}
 }
 
 Value buildRet(
@@ -174,18 +274,45 @@ Value buildRetVoid(ref InstructionBlock ib) {
 Value buildCall(
 	ref InstructionBlock ib,
 	Function fn,
-	Value[] values,
-	string label
+	Value[] values
 ) {
 	import std.algorithm, std.array;
 	LLVMValueRef[] t = values.map!(v => v.value).array;
+	assert(fn.value);
+	assert(t.ptr);
+	// TODO assert values.length matches expected llvm function parameters
 	return
 		Value(
 			LLVMBuildCall(
-				ib.builder, fn.value, t.ptr, cast(uint)values.length, label.ptr
+				ib.builder,
+				fn.value,
+				t.ptr,
+				cast(uint)values.length,
+				ib.nextLabel
 			)
 		)
 	;
+}
+
+Value buildAlloca(
+	ref InstructionBlock ib, Type type, string label
+) {
+	return Value(LLVMBuildAlloca( ib.builder, type.toLlvmType, label.toStringz));
+}
+
+Value buildLoad(
+	ref InstructionBlock ib, Value val
+) {
+	auto loadValue = LLVMBuildLoad(ib.builder, val.value, ib.nextLabel);
+	assert(loadValue != null, "could not load value: " ~ val.to!string);
+	std.writefln("value to load: '%s'", val.to!string);
+	return Value(loadValue);
+}
+
+Value buildStore(
+	ref InstructionBlock ib, Value dst, Value src
+) {
+	return Value(LLVMBuildStore(ib.builder, src.value, dst.value));
 }
 
 ////////////////////////////////////////////////////////////////////////////////

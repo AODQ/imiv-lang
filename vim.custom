@@ -1,5 +1,5 @@
 
 function! MakeprgRelease()
-  let &makeprg = 'dub build'
+  let &makeprg = 'dub build --compiler=ldc'
   make
 endfunction
