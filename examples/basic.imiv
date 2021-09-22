@@ -1,10 +1,16 @@
 
 # [value msgcontents : [fee fee]] #
 
+[unittest,]
+fn testReturn := i32 || {
+	ret 5;
+};
+
 const g := i32 {5};
 const y := i32 {[+ g 5]};
 g := {[+ g y]};
-ret g;
+g := {y};
+ret [testReturn];
 
 #fn dumb := i32 | x : i32 , y : i32 , | {
 #	const g := i32 {-5};

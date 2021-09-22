@@ -5,6 +5,16 @@ static import std;
 
 import std.string : toStringz;
 
+struct Context {
+	LLVMContextRef value;
+
+	~this() {
+		LLVMContextDispose(this.value);
+	}
+}
+
+Context createContext() { return Context(LLVMContextCreate()); }
+
 struct Module {
 	LLVMModuleRef value;
 }
@@ -23,6 +33,52 @@ Function getFunction(Module self, string label) {
 	auto value = LLVMGetNamedFunction(self.value, label.toStringz);
 	// TODO check value exists
 	return Function(value);
+}
+
+struct FunctionRange {
+	LLVMValueRef iterator = null;
+	LLVMModuleRef modul;
+
+	this(LLVMModuleRef modul_) {
+		this.modul = modul_;
+		this.iterator = LLVMGetFirstFunction(this.modul);
+	}
+
+	bool empty() {
+		return iterator == null;
+	}
+
+	Function front() {
+		return Function(this.iterator);
+	}
+
+	void popFront() {
+		this.iterator = LLVMGetNextFunction(this.iterator);
+	}
+}
+
+FunctionRange functions(Module self) {
+	return FunctionRange(self.value);
+}
+
+struct Attribute {
+	LLVMAttributeRef value;
+}
+
+Attribute getStringAttributeFromKey(
+	Function fn,
+	LLVMAttributeIndex idx,
+	string key
+) {
+	return
+		Attribute(
+			LLVMGetStringAttributeAtIndex(
+				fn.value,
+				idx,
+				key.ptr, cast(uint)key.length
+			)
+		)
+	;
 }
 
 bool verify(Module self) {
@@ -149,6 +205,7 @@ struct FunctionCreateInfo {
 	Type returnType;
 	Type[] parameters;
 	string label;
+	string[] attributes;
 	// bool variadic; no support in IMIV
 };
 
@@ -168,7 +225,7 @@ Function createFunction(ref Module mod, FunctionCreateInfo ci) {
 	import std.algorithm;
 	import std.array;
 
-	return
+	Function fn =
 		Function(
 			LLVMAddFunction(
 				mod.value,
@@ -183,6 +240,21 @@ Function createFunction(ref Module mod, FunctionCreateInfo ci) {
 			)
 		)
 	;
+
+	ci.attributes.each!(
+		(string attr) =>
+			LLVMAddAttributeAtIndex(
+				fn.value,
+				0, // attribute index
+				LLVMCreateStringAttribute(
+					LLVMGetGlobalContext(),
+					attr.toStringz, cast(uint)attr.length,
+					"on", 2
+				)
+			)
+	);
+
+	return fn;
 }
 
 struct InstructionBlock {
@@ -277,9 +349,8 @@ Value buildCall(
 	Value[] values
 ) {
 	import std.algorithm, std.array;
-	LLVMValueRef[] t = values.map!(v => v.value).array;
 	assert(fn.value);
-	assert(t.ptr);
+	LLVMValueRef[] t = values.map!(v => v.value).array;
 	// TODO assert values.length matches expected llvm function parameters
 	return
 		Value(

@@ -1,3 +1,4 @@
+static import std.conv;
 static import std.file;
 static import std.getopt;
 static import std.regex;
@@ -9,13 +10,23 @@ import pegged.grammar;
 
 import util;
 
+void assertGrammarName(T)(T grammar, string expectation) {
+	if (grammar.name != expectation) {
+		std.writefln(
+			"Expecting grammar: %s, but received: %s",
+			expectation, grammar.name
+		);
+		assert(false);
+	}
+}
+
 mixin(grammar(`
 	PGI:
 
 		CodeBlock < (CodeBlockStatement)+
 		CodeBlockStatement < (Function / Message / Assignment / ReturnStatement) ";"
 
-		Message < "[" (Variable / Operator) (Spacing Request)+ "]"
+		Message < "[" (Variable / Operator) (Spacing Request)* "]"
 
 		AssignmentEq < ":="
 
@@ -39,9 +50,10 @@ mixin(grammar(`
 
 
 		Params < '[' (Variable ':' Type ',')+ ']'
-		Function < "fn" Variable AssignmentEq Type Params '{' CodeBlock '}'
+		FnParams < '|' (Variable ':' Type ',')* '|'
+		Function < Array? "fn" Variable AssignmentEq Type FnParams '{' CodeBlock '}'
 
-		Array < "{" (Atom ",")* "}"
+		Array < "[" (Atom ",")* "]"
 
 		Atom < (
 			Array / Integer / Float / Variable / Operator / Message / StringLiteral
@@ -131,6 +143,7 @@ ImivAtom ComputeContents(T)(
 	ref Context ctx,
 	immutable bool verbose,
 ) {
+	assert(grammar.successful, "grammar not success");
 	import std.algorithm;
 	import std.array;
 	import std.conv;
@@ -167,11 +180,11 @@ ImivAtom ComputeContents(T)(
 				isDeclaration = true;
 				++ it;
 			}
-			assert(grammar.children[it].name == "PGI.Variable");
+			assertGrammarName(grammar.children[it], "PGI.Variable");
 			auto variableLabel = grammar.children[it].matches[0..$].ToString;
 			++ it;
 
-			assert(grammar.children[it].name == "PGI.AssignmentKind");
+			assertGrammarName(grammar.children[it], "PGI.AssignmentKind");
 			auto assignmentKind = grammar.children[it].matches[0..$].ToString;
 			++ it;
 
@@ -188,7 +201,7 @@ ImivAtom ComputeContents(T)(
 			}
 
 			std.writefln("grammar name: %s", grammar.children[it]);
-			assert(grammar.children[it].name == "PGI.Atom");
+			assertGrammarName(grammar.children[it], "PGI.Atom");
 			auto results = ComputeContents(grammar.children[it], ctx, verbose);
 
 			// -- see if we can assign
@@ -201,7 +214,7 @@ ImivAtom ComputeContents(T)(
 				);
 				ctx.instrBlock.buildStore(
 					ctx.namedValues[variableLabel],
-					results.asValue(ctx)
+					results.toRegisterValues(ctx)
 				);
 				return ImivAtom(ctx.namedValues[variableLabel]);
 			}
@@ -233,16 +246,34 @@ ImivAtom ComputeContents(T)(
 
 			// assign value
 			assert(assignmentKind == ":=", "only support ':=' for now");
-			ctx.instrBlock.buildStore(allocaValue, results.asValue(ctx));
+			ctx.instrBlock.buildStore(allocaValue, results.toRegisterValues(ctx));
 
 			return ImivAtom(allocaValue);
 
 		case "PGI.Function":
-			//Function < "fn" Variable AssignmentEq Type Params '{' CodeBlock '}' ';'
-			auto const functionLabel = grammar.children[0].matches[0..$].ToString;
-			auto const returnType = grammar.children[2].matches[0..$].ToString;
-			auto const parameters = grammar.children[3].children;
-			auto const codeblock = grammar.children[4];
+			// Function <
+			//   Array? "fn" Variable AssignmentEq Type Params '{' CodeBlock '}'
+			size_t idx = 0;
+			auto const arrayGrammar = grammar.children[idx];
+			bool hasArrayGrammar = false;
+			if (grammar.children[0].name == "PGI.Array") {
+				hasArrayGrammar = true;
+				++ idx;
+			}
+
+			assertGrammarName(grammar.children[idx], "PGI.Variable");
+			auto const functionLabel = grammar.children[idx].matches[0..$].ToString;
+			++ idx;
+			assertGrammarName(grammar.children[idx], "PGI.AssignmentEq");
+			++ idx;
+			assertGrammarName(grammar.children[idx], "PGI.Type");
+			auto const returnType = grammar.children[idx].matches[0..$].ToString;
+			++ idx;
+			assertGrammarName(grammar.children[idx], "PGI.FnParams");
+			auto const parameters = grammar.children[idx].children;
+			++ idx;
+			assertGrammarName(grammar.children[idx], "PGI.CodeBlock");
+			auto const codeblock = grammar.children[idx];
 
 			assert(codeblock.name == "PGI.CodeBlock");
 
@@ -258,7 +289,14 @@ ImivAtom ComputeContents(T)(
 				returnType : returnType.toType,
 				parameters:
 					parameterReturnTypes.map!(l => l.matches[0..$].ToString.toType).array,
-				label : functionLabel
+				label : functionLabel,
+				attributes :
+					hasArrayGrammar
+						? arrayGrammar
+						  	.children[0..$]
+						  	.map!(n => n.matches[0..$].ToString)
+						  	.array
+						: []
 			};
 			auto newFunc = createFunction(ctx.modul, funcCreateInfo);
 			auto newInstrBlock = InstructionBlock.append(newFunc, "entry");
@@ -359,14 +397,21 @@ ImivAtom ComputeContents(T)(
 void EvaluateContents(
 	immutable string expression,
 	immutable bool verbose,
-	immutable bool retainSourceFiles
+	immutable bool retainSourceFiles,
+	immutable bool runUnitTests
 ) {
 	auto expandedExpression = PGI(expression);
+	assert (
+		expandedExpression.successful,
+		  "expression not successful: '"
+		~ std.conv.to!string(expandedExpression) ~ "'"
+	);
 
 	if (verbose) {
 		std.stdio.writefln("expanded expression:\n%s", expandedExpression);
 	}
 
+	util.createContext();
 	auto modul = util.createModule("test-module");
 	util.FunctionCreateInfo defFunctionCreateInfo = {
 		returnType : util.Type.i32,
@@ -391,9 +436,21 @@ void EvaluateContents(
 
 	modul.WriteBitcode("out.bc");
 
-	auto value = engine.runFunction(defFunc, []);
-
-	std.writefln("results: %d", value.ToI32);
+	if (!runUnitTests) {
+		auto value = engine.runFunction(defFunc, []);
+		std.writefln("results: %d", value.ToI32);
+	} else {
+		// iterate functions & check for unittest attribute
+		foreach (fn; modul.functions) {
+			// check if unittest
+			bool isUnitTest =
+				fn.getStringAttributeFromKey(0, "unittest").value != null
+			;
+			if (isUnitTest) {
+				std.writefln("test res: %d", engine.runFunction(fn, []).ToI32);
+			}
+		}
+	}
 
 	std.writefln("exiting imiv");
 }
@@ -417,11 +474,13 @@ void main(string[] args) {
 	string filename = "";
 	bool verbose = false;
 	bool retainSourceFiles = false;
+	bool runUnitTests = false;
 	auto helpInformation = std.getopt.getopt(
 		args,
 		"file",    &filename, //  string
 		"verbose", &verbose,  // flag
 		"retain-files", &retainSourceFiles,  // flag
+		"run-unit-tests", &runUnitTests,  // flag
 	);
 
 	if (helpInformation.helpWanted || filename == "") {
@@ -436,6 +495,7 @@ void main(string[] args) {
 	EvaluateContents(
 		StripContents(fileContents, verbose),
 		verbose,
-		retainSourceFiles
+		retainSourceFiles,
+		runUnitTests
 	);
 }
