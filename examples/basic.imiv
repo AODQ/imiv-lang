@@ -6,11 +6,65 @@ fn testReturn := i32 || {
 	ret 5;
 };
 
-const g := i32 {5};
-const y := i32 {[+ g 5]};
-g := {[+ g y]};
-g := {y};
-ret [testReturn];
+[unittest,]
+fn testAdd := i32 || {
+	ret [+ 5 -5];
+};
+
+[unittest,]
+fn testSub := i32 || {
+	ret [- 5 -5];
+};
+
+[unittest,]
+fn testMul := i32 || {
+	ret [* 5 -5];
+};
+
+[unittest,]
+fn testDiv := i32 || {
+	ret [* 25 -5];
+};
+
+[unittest,]
+fn testVariableDeclaration := i32 || {
+	const g := i32 {5};
+	ret g;
+};
+
+[unittest,]
+fn testVariableDeclarationSum := i32 || {
+	const g := i32 {[+ 1 4]};
+	ret g;
+};
+
+[unittest,]
+fn testVariableDefinition := i32 || {
+	const g := i32 {0};
+	g := {5};
+	ret g;
+};
+
+[unittest,]
+fn testVariableDefinitionOnOther := i32 || {
+	const g := i32 {0};
+	const h := i32 {5};
+	g := {h};
+	ret g;
+};
+
+fn testFnParams_Sum := i32 |x : i32, y : i32, z : i32,| {
+	ret [+ [+ x y] z];
+};
+
+[unittest,]
+fn testFnParams := i32 || {
+	const g := i32 {0};
+	const h := i32 {5};
+	ret [testFnParams_Sum g h 10];
+};
+
+ret [+ 4 0];
 
 #fn dumb := i32 | x : i32 , y : i32 , | {
 #	const g := i32 {-5};

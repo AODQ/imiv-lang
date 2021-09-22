@@ -43,7 +43,7 @@ mixin(grammar(`
 		Sign <- ('+'/'-')
 		Integer <- Sign? Integral
 		Float <~ Sign? Integral '.' Integral 'f'
-		Variable <- (alpha / Alpha) (alpha / Alpha / [0-9])*
+		Variable <- (alpha / Alpha) (alpha / Alpha / '-' / '_' / [0-9])*
 		Operator <- ("+" / "-" / "*" / "/" / "<")
 		Type <- Variable
 		ReturnStatement < 'ret' (Atom)
