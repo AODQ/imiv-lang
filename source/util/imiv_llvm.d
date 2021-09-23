@@ -23,10 +23,26 @@ Module createModule(string label) {
 	return Module(LLVMModuleCreateWithName(label.toStringz));
 }
 
-void DumpModule(Module self) {
+string getName(T)(T value) if (is(T == Function) || is(T == Value)) {
+	size_t len;
+	const(char) * str = LLVMGetValueName2(value.value, &len);
+
+	string buf;
+	for (size_t i = 0; i < len; ++ i)
+		buf ~= str[i];
+	return buf;
+}
+
+void Dump(Module self) {
 	std.writefln("---- module dump --------------------------");
 	LLVMDumpModule(self.value);
-	std.writefln("-------------------------------------------");
+	std.writefln("\n-------------------------------------------");
+}
+
+void Dump(Value self) {
+	std.writefln("---- value  dump --------------------------");
+	LLVMDumpValue(self.value);
+	std.writefln("\n-------------------------------------------");
 }
 
 Function getFunction(Module self, string label) {
@@ -298,6 +314,10 @@ enum OpEnum {
 	AddFlt, SubFlt, DivFlt, MulFlt,
 };
 
+enum OpUnaryEnum {
+	NegInt
+};
+
 OpEnum strToBuildOp(string op, bool isFloat) {
 	switch (op) {
 		default: assert(false, "unknown op: '" ~ op ~ "'");
@@ -305,6 +325,14 @@ OpEnum strToBuildOp(string op, bool isFloat) {
 		case "-": return isFloat ? OpEnum.SubFlt : OpEnum.SubInt;
 		case "*": return isFloat ? OpEnum.MulFlt : OpEnum.MulInt;
 		case "/": return isFloat ? OpEnum.DivFlt : OpEnum.DivInt;
+	}
+}
+
+Value buildOpUnary(ref InstructionBlock ib, OpUnaryEnum op, Value v0) {
+	assert(v0.value);
+	final switch (op) {
+		case OpUnaryEnum.NegInt:
+			return Value(LLVMBuildNeg(ib.builder, v0.value, ib.nextLabel));
 	}
 }
 

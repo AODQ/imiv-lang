@@ -26,7 +26,7 @@ mixin(grammar(`
 		CodeBlock < (CodeBlockStatement)+
 		CodeBlockStatement < (Function / Message / Assignment / ReturnStatement) ";"
 
-		Message < "[" (Variable / Operator) (Spacing Request)* "]"
+		Message < "[" (Variable) (Spacing Request)* "]"
 
 		AssignmentEq < ":="
 
@@ -48,6 +48,17 @@ mixin(grammar(`
 		Type <- Variable
 		ReturnStatement < 'ret' (Atom)
 
+		IATerm     < IAFactor (IAAdd / IASub)*
+		IAAdd      < "+" IAFactor
+		IASub      < "-" IAFactor
+		IAFactor   < IAPrimary (IAMul / IADiv)*
+		IAMul      < "*" IAPrimary
+		IADiv      < "/" IAPrimary
+		IAPrimary  < IAParens / IANeg / Integral / Variable / Message / Float
+		IAParens   < :"(" IATerm :")"
+		IANeg      < "-" IAPrimary
+
+		InlineArithmetic < "$(" IATerm ")"
 
 		Params < '[' (Variable ':' Type ',')+ ']'
 		FnParams < '|' (Variable ':' Type ',')* '|'
@@ -56,10 +67,10 @@ mixin(grammar(`
 		Array < "[" (Atom ",")* "]"
 
 		Atom < (
-			Array / Integer / Float / Variable / Operator / Message / StringLiteral
+			Array / Integer / Float / Variable / Operator / Message / StringLiteral / InlineArithmetic
 		)
 
-		Request < (Atom) (":" TypeNotation)?
+		Request < (Atom) (":" Atom)?
 `));
 
 
@@ -138,18 +149,40 @@ struct Context {
 	}
 };
 
+struct DebugWrite {
+	int level = 0;
+	DebugWrite opCall()() {
+		DebugWrite n;
+		n.level = this.level+1;
+		return n;
+	}
+	void opCall(T...)(string prepend, T args) {
+		import std.algorithm;
+		import std.range;
+		string p = "";
+		for (int i = 0; i < level; ++ i)
+			p ~= ((i % 2 == 0 && i != 0) ? "|" : " ");
+		std.writefln(p ~ prepend, args);
+	}
+};
+
 ImivAtom ComputeContents(T)(
 	const(T) grammar,
 	ref Context ctx,
-	immutable bool verbose,
+	DebugWrite dbg
 ) {
 	assert(grammar.successful, "grammar not success");
 	import std.algorithm;
 	import std.array;
 	import std.conv;
+	import std.range;
+	import std.string;
 	import std.sumtype;
 
-	std.stdio.writefln("processing: %s", grammar.name);
+	dbg(
+		"processing: '%s': '%s'",
+		grammar.name, grammar.matches[0..$].ToString
+	);
 
 	switch (grammar.name) {
 		default:
@@ -158,13 +191,15 @@ ImivAtom ComputeContents(T)(
 			);
 			assert(false);
 		case "PGI.Integer":
+		case "PGI.Integral": // integral for math; 3-5 becomes add(3, neg(5))
 			auto integer = grammar.matches[0..$].ToString.to!int;
+			dbg("INTEGER: %s", integer);
 			return ImivAtom(createValue(integer));
 
 		case "PGI.ReturnStatement":
 			auto retValue =
 				ComputeContents(
-					grammar.children[0], ctx, verbose
+					grammar.children[0], ctx, dbg()
 				)
 			;
 			ctx.instrBlock.buildRet(retValue.toRegisterValues(ctx));
@@ -192,21 +227,21 @@ ImivAtom ComputeContents(T)(
 			string typeNotation = "";
 			if (grammar.children[it].name == "PGI.TypeNotation") {
 				hasTypeDeclaration = true;
-				std.writefln("type: %s", grammar.children[it]);
-				std.writefln("type1: %s", grammar.children[it].children[0]);
+				dbg("type: %s", grammar.children[it]);
+				dbg("type1: %s", grammar.children[it].children[0]);
 				typeNotation =
 					grammar.children[it].children[0].matches[0..$].ToString
 				;
 				++ it;
 			}
 
-			std.writefln("grammar name: %s", grammar.children[it]);
+			dbg("grammar name: %s", grammar.children[it]);
 			assertGrammarName(grammar.children[it], "PGI.Atom");
-			auto results = ComputeContents(grammar.children[it], ctx, verbose);
+			auto results = ComputeContents(grammar.children[it], ctx, dbg());
 
 			// -- see if we can assign
 			if (variableLabel in ctx.namedValues) {
-				std.writefln("found variable: '%s'", variableLabel);
+				dbg("found variable: '%s'", variableLabel);
 				assert(!isDeclaration, "variable shadowing: '" ~ variableLabel ~ "'");
 				assert(
 					typeModifiers.children.length == 0,
@@ -219,7 +254,7 @@ ImivAtom ComputeContents(T)(
 				return ImivAtom(ctx.namedValues[variableLabel]);
 			}
 
-			std.writefln("will create variable: '%s'", variableLabel);
+			dbg("will create variable: '%s'", variableLabel);
 
 			// -- create new variable
 			// allocate variable to stack
@@ -231,17 +266,16 @@ ImivAtom ComputeContents(T)(
 			;
 			allocaValue.type.typeModifiers =
 				[typeModifiers.matches[0..$].ToString.toTypeModifier]
-				/* typeModifiers.map!(n => n.matches[0..$].ToString.toTypeModifier) */
 			;
 			allocaValue.type.baseType = typeNotation.toType;
-			std.writefln("type mods : %s", typeModifiers);
-			std.writefln("type : %s", allocaValue.type);
+			dbg("type mods : %s", typeModifiers);
+			dbg("type : %s", allocaValue.type);
 			assert(
 				allocaValue.type.isVariable,
 				"could not create var: '" ~ variableLabel ~ "'"
 			);
 
-			std.writefln("inserting variable: '%s'", variableLabel);
+			dbg("inserting variable: '%s'", variableLabel);
 			ctx.namedValues[variableLabel] = allocaValue;
 
 			// assign value
@@ -306,7 +340,7 @@ ImivAtom ComputeContents(T)(
 			// add parameters from the function to named values lookup
 			for (uint it = 0; it < newFunc.getParameterLength(); ++ it) {
 				auto label = parameterLabels[it].matches[0..$].ToString;
-				std.writefln("label parameter: %s", label);
+				dbg("label parameter: %s", label);
 				newNamedValues[label] = newFunc.getParameter(it);
 			}
 
@@ -317,12 +351,12 @@ ImivAtom ComputeContents(T)(
 				modul : ctx.modul,
 				namedValues : newNamedValues
 			};
-			ComputeContents(codeblock, newCtx, verbose);
+			ComputeContents(codeblock, newCtx, dbg());
 		break;
 
 		case "PGI.Atom":
 		case "PGI.Request":
-			return ComputeContents(grammar.children[0], ctx, verbose);
+			return ComputeContents(grammar.children[0], ctx, dbg());
 
 		case "PGI":
 		case "PGI.CodeBlock":
@@ -330,7 +364,7 @@ ImivAtom ComputeContents(T)(
 		case "PGI.Array":
 		{
 			foreach (elem ; grammar.children[0..$]) {
-				auto results = ComputeContents(elem, ctx, verbose);
+				auto results = ComputeContents(elem, ctx, dbg());
 				//results.tryMatch!(
 				//	(Value val) {
 				//
@@ -341,43 +375,48 @@ ImivAtom ComputeContents(T)(
 			}
 			/* ImivAtom[] atoms; */
 			/* foreach (elem; grammar.children[0..$]) */
-			/* 	atoms ~= ComputeContents(elem, verbose); */
+			/* 	atoms ~= ComputeContents(elem, dbg()); */
 			/* return ImivAtom(atoms); */
 		}
 		break;
 
 		case "PGI.Message": {
 
-			std.writefln("params: %s", grammar.children[1..$]);
+			assert(grammar.children[0].name == "PGI.Variable");
 			auto label = grammar.children[0].matches[0..$].ToString;
 
-			auto parameters =
-				grammar
-					.children[1..$]
+			assert(grammar.children[1].name == "PGI.Request");
+			auto parameters = grammar.children[1..$];
+
+			auto parametersByValue =
+				parameters
 					.map!(
-						n =>
-							ComputeContents(n, ctx, verbose).toRegisterValues(ctx)
+						(value) =>
+							ComputeContents(
+								value.children[1], ctx, dbg()
+							).toRegisterValues(ctx)
 					)
 					.array
 			;
 
 			if (label == "+" || label == "-" || label == "/" || label == "*") {
-				util.OpEnum resolvedOp = util.strToBuildOp(label, false);
-				assert(parameters.length == 2, "only can do 2 params for now");
-				std.writefln("calling: %s for params: %s", label, parameters);
-				return
-					ImivAtom(
-						ctx.instrBlock.buildOp(resolvedOp, parameters[0], parameters[1])
-					)
-				;
+				return ImivAtom(ImivNil());
+				//util.OpEnum resolvedOp = util.strToBuildOp(label, false);
+				//assert(parameters.length == 2, "only can do 2 params for now");
+				//dbg("calling: %s for params: %s", label, parameters);
+				//return
+				//	ImivAtom(
+				//		ctx.instrBlock.buildOp(resolvedOp, parameters[0], parameters[1])
+				//	)
+				//;
 			} else {
 				auto callFunc = ctx.modul.getFunction(label);
 				assert(
 					callFunc.value,
 					"could not get function from label '" ~ label ~ "'"
 				);
-				auto callValue = ctx.instrBlock.buildCall(callFunc, parameters);
-				std.writefln("building call... %s", callValue);
+				auto callValue = ctx.instrBlock.buildCall(callFunc, parametersByValue);
+				dbg("building call... %s", callValue);
 				return ImivAtom(callValue);
 			}
 		}
@@ -389,9 +428,73 @@ ImivAtom ComputeContents(T)(
 		case "PGI.StringLiteral":
 			/* return ImivAtom(ImivValue(grammar.matches[0..$].ToString)); */
 		break;
+
+		// -- inline arithmetic
+		case "PGI.InlineArithmetic":
+			return ComputeContents(grammar.children[0], ctx, dbg());
+
+		case "PGI.IATerm":
+			Value itValue = util.createValue!int(0).ToConstI32;
+			foreach (child; grammar.children) {
+				auto contents =
+					ComputeContents(child, ctx, dbg()).toRegisterValues(ctx)
+				;
+				itValue =
+					ctx.instrBlock.buildOp(
+						util.OpEnum.AddInt,
+						itValue,
+						contents
+					)
+				;
+			}
+			return ImivAtom(itValue);
+
+		case "PGI.IAAdd":
+			return ComputeContents(grammar.children[0], ctx, dbg());
+
+		case "PGI.IASub":
+		case "PGI.IANeg":
+			return
+				ImivAtom(
+					ctx.instrBlock.buildOpUnary(
+						util.OpUnaryEnum.NegInt,
+						ComputeContents(grammar.children[0], ctx, dbg())
+							.toRegisterValues(ctx)
+					)
+				)
+			;
+
+		case "PGI.IAFactor":
+			Value itValue = util.createValue!int(1).ToConstI32;
+			foreach(child; grammar.children) {
+				const childName = child.name[child.name.lastIndexOf('.')+1 .. $];
+				itValue =
+					ctx.instrBlock.buildOp(
+						childName == "IADiv" ? util.OpEnum.DivInt : util.OpEnum.MulInt,
+						itValue,
+						ComputeContents(child, ctx, dbg()).toRegisterValues(ctx)
+					)
+				;
+			}
+			return ImivAtom(itValue);
+
+		case "PGI.IAMul":
+		case "PGI.IADiv":
+		case "PGI.IAPrimary":
+		case "PGI.IAParens":
+			return ComputeContents(grammar.children[0], ctx, dbg());
 	}
 
 	return ImivAtom(ImivNil());
+}
+
+void prettyExpressionPrint(T)(T grammar, string prepend = "") {
+	std.writefln(
+		"%s+-(%s) '%s'",
+		prepend, grammar.name, grammar.matches[0..$].ToString
+	);
+	foreach (child ; grammar.children)
+		prettyExpressionPrint(child, prepend ~ "|   ");
 }
 
 void EvaluateContents(
@@ -408,7 +511,10 @@ void EvaluateContents(
 	);
 
 	if (verbose) {
-		std.stdio.writefln("expanded expression:\n%s", expandedExpression);
+		std.stdio.writefln("--------------------\n");
+		std.stdio.writefln("expanded expression:\n");
+		prettyExpressionPrint(expandedExpression);
+		std.stdio.writefln("--------------------\n");
 	}
 
 	util.createContext();
@@ -427,9 +533,10 @@ void EvaluateContents(
 		modul : modul,
 		namedValues : null,
 	};
-	auto result = ComputeContents(expandedExpression, newCtx, verbose);
+	DebugWrite dbg;
+	auto result = ComputeContents(expandedExpression, newCtx, dbg);
 
-	modul.DumpModule;
+	modul.Dump;
 	modul.verify;
 
 	auto engine = modul.createEngineJIT();
@@ -447,7 +554,11 @@ void EvaluateContents(
 				fn.getStringAttributeFromKey(0, "unittest").value != null
 			;
 			if (isUnitTest) {
-				std.writefln("test res: %d", engine.runFunction(fn, []).ToI32);
+				std.writefln(
+					"test '%s' res: %d",
+					fn.getName,
+					engine.runFunction(fn, []).ToI32
+				);
 			}
 		}
 	}
