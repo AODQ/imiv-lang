@@ -68,7 +68,7 @@ fn testFnParamsInlineArithmetic := i32 || {
 };
 
 [unittest,]
-fn testFnParamsInlineArithmetic := i32 || {
+fn testFnParamsInlineArithmetic2 := i32 || {
 	const g := i32 { 6 };
 	ret [
 		testFnParams_Sum
@@ -76,6 +76,13 @@ fn testFnParamsInlineArithmetic := i32 || {
 			y:$(4 * g)
 			z:$(g + -32 + [testFnParams_Sum x:1 y:-1 z:$(-1)])
 	];
+};
+
+[unittest,]
+fn testInlineArithmeticOnVarDef := i32 || {
+	const g := i32 { $(8 + 2) };
+	g := { $(g - 5) };
+	ret g;
 };
 
 [unittest,]
@@ -89,6 +96,11 @@ fn testOverflow := i32 || {
 	const g := i32 { 6 };
 	ret $(9 * 9 * 9 * 9 * 9 * 9 * 9999 * 9999 * 9999 * 9999 * 9999);
 };
+
+#[]
+#fn testParamMismatch := i32 || {
+#	ret [testFnParams_Sum x:4 y:2 z:0]; # rename to a if u dare
+#};
 
 ret 0;
 
