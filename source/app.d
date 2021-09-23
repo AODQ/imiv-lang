@@ -296,7 +296,7 @@ ImivAtom ComputeContents(T)(
 			}
 
 			assertGrammarName(grammar.children[idx], "PGI.Variable");
-			auto const functionLabel = grammar.children[idx].matches[0..$].ToString;
+			auto functionLabel = grammar.children[idx].matches[0..$].ToString;
 			++ idx;
 			assertGrammarName(grammar.children[idx], "PGI.AssignmentEq");
 			++ idx;
@@ -318,6 +318,13 @@ ImivAtom ComputeContents(T)(
 			auto const parameterLabels =
 				parameters.filter!(l => l.name == "PGI.Variable").array
 			;
+
+			// fix function label
+			functionLabel ~=
+				parameterLabels.map!(n => "-%p_" ~ n.matches[0..$].ToString).join
+			;
+
+			dbg("FIXED FUNCTION LABEL '%s'", functionLabel);
 
 			util.FunctionCreateInfo funcCreateInfo = {
 				returnType : returnType.toType,
@@ -398,6 +405,17 @@ ImivAtom ComputeContents(T)(
 					)
 					.array
 			;
+
+			// fix label
+			label ~=
+				parameters
+					.map!(
+						(value) =>
+							"-%p_" ~ value.children[0].matches[0..$].ToString
+					)
+					.join
+			;
+
 
 			if (label == "+" || label == "-" || label == "/" || label == "*") {
 				return ImivAtom(ImivNil());

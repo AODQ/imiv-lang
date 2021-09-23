@@ -78,6 +78,18 @@ fn testFnParamsInlineArithmetic := i32 || {
 	];
 };
 
+[unittest,]
+fn testDivByZero := i32 || {
+	const g := i32 { 6 };
+	ret $(1 / 0);
+};
+
+[unittest,]
+fn testOverflow := i32 || {
+	const g := i32 { 6 };
+	ret $(9 * 9 * 9 * 9 * 9 * 9 * 9999 * 9999 * 9999 * 9999 * 9999);
+};
+
 ret 0;
 
 #[imiv println msg:{"hello world forever!", "and ever!",}];
