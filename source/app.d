@@ -24,17 +24,19 @@ mixin(grammar(`
 	PGI:
 
 		CodeBlock < (CodeBlockStatement)+
-		CodeBlockStatement < (Function / Message / Assignment / ReturnStatement) ";"
+		CodeBlockStatement < (Import / Function / Message / Assignment / ReturnStatement) ";"
 
 		Message < "[" (Variable) (Spacing Request)* "]"
+
+		Import < '$import' Spacing Variable
 
 		AssignmentEq < ":="
 
 		AssignmentKind < AssignmentEq
 
-		TypeModifier < ( "const" / "var" )
+		TypeModifier < ( "const" / "*" )
 
-		Assignment < (TypeModifier)* Variable AssignmentKind TypeNotation? '{' Atom '}'
+		Assignment < Variable AssignmentKind TypeNotation? TypeModifier* '{' Atom '}'
 
 		TypeNotation < Variable
 
@@ -178,6 +180,7 @@ ImivAtom ComputeContents(T)(
 	import std.range;
 	import std.string;
 	import std.sumtype;
+	import std.format;
 
 	dbg(
 		"processing: '%s': '%s'",
@@ -209,12 +212,7 @@ ImivAtom ComputeContents(T)(
 			// Assignment <
 			//   (TypeModifier+) Variable AssignmentKind TypeNotation? '{' Atom '}'
 			auto it = 0;
-			bool isDeclaration = false;
-			auto typeModifiers = grammar.children[it];
-			if (grammar.children[it].name == "PGI.TypeModifier") {
-				isDeclaration = true;
-				++ it;
-			}
+
 			assertGrammarName(grammar.children[it], "PGI.Variable");
 			auto variableLabel = grammar.children[it].matches[0..$].ToString;
 			++ it;
@@ -227,11 +225,18 @@ ImivAtom ComputeContents(T)(
 			string typeNotation = "";
 			if (grammar.children[it].name == "PGI.TypeNotation") {
 				hasTypeDeclaration = true;
-				dbg("type: %s", grammar.children[it]);
-				dbg("type1: %s", grammar.children[it].children[0]);
+				dbg("TYPE: %s", grammar.children[it]);
+				dbg("TYPE1: %s", grammar.children[it].children[0]);
 				typeNotation =
 					grammar.children[it].children[0].matches[0..$].ToString
 				;
+				++ it;
+			}
+
+			bool hasTypeModifiers = false;
+			auto typeModifiers = grammar.children[it];
+			if (grammar.children[it].name == "PGI.TypeModifier") {
+				hasTypeModifiers = true;
 				++ it;
 			}
 
@@ -242,10 +247,9 @@ ImivAtom ComputeContents(T)(
 			// -- see if we can assign
 			if (variableLabel in ctx.namedValues) {
 				dbg("found variable: '%s'", variableLabel);
-				assert(!isDeclaration, "variable shadowing: '" ~ variableLabel ~ "'");
 				assert(
-					typeModifiers.children.length == 0,
-					"declaration shadows existing var"
+					!hasTypeDeclaration,
+					"variable shadowing: '" ~ variableLabel ~ "'"
 				);
 				ctx.instrBlock.buildStore(
 					ctx.namedValues[variableLabel],
@@ -255,6 +259,10 @@ ImivAtom ComputeContents(T)(
 			}
 
 			dbg("will create variable: '%s'", variableLabel);
+			assert(
+				hasTypeDeclaration,
+				std.format.format("unknown variable '%s'", variableLabel)
+			);
 
 			// -- create new variable
 			// allocate variable to stack
@@ -267,7 +275,7 @@ ImivAtom ComputeContents(T)(
 			allocaValue.type.typeModifiers =
 				[typeModifiers.matches[0..$].ToString.toTypeModifier]
 			;
-			allocaValue.type.baseType = typeNotation.toType;
+			allocaValue.type.baseType = typeNotation.toUnderlyingType;
 			dbg("type mods : %s", typeModifiers);
 			dbg("type : %s", allocaValue.type);
 			assert(
@@ -387,6 +395,26 @@ ImivAtom ComputeContents(T)(
 		}
 		break;
 
+		case "PGI.Import": {
+			assert(grammar.children[0].name == "PGI.Variable");
+			auto moduleLabel = grammar.children[0].matches[0..$].ToString;
+			// for now import can only imports stdlib
+			if (moduleLabel == "imiv-stdc") {
+				util.FunctionCreateInfo funcCreateInfo = {
+					returnType : RealType([], util.Type.i32),
+					parameters: [
+						util.RealType([util.TypeModifier.Pointer], util.Type.i8)
+					],
+					label : "puts",
+					attributes : []
+				};
+				auto newFunc = createFunction(ctx.modul, funcCreateInfo);
+			} else {
+				assert(false, "can not import '" ~ moduleLabel ~ "'");
+			}
+			return ImivAtom(ImivNil());
+		}
+
 		case "PGI.Message": {
 
 			assert(grammar.children[0].name == "PGI.Variable");
@@ -444,8 +472,7 @@ ImivAtom ComputeContents(T)(
 			return ImivAtom(ctx.getNamedValue(grammar.matches[0..$].ToString));
 
 		case "PGI.StringLiteral":
-			/* return ImivAtom(ImivValue(grammar.matches[0..$].ToString)); */
-		break;
+			return ImivAtom(util.ToConstString(grammar.matches[0..$].ToString));
 
 		// -- inline arithmetic
 		case "PGI.InlineArithmetic":
@@ -538,7 +565,7 @@ void EvaluateContents(
 	util.createContext();
 	auto modul = util.createModule("test-module");
 	util.FunctionCreateInfo defFunctionCreateInfo = {
-		returnType : util.Type.i32,
+		returnType : RealType([], util.Type.i32),
 		parameters : [],
 		label : "default-entry",
 	};

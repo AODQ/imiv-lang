@@ -139,6 +139,7 @@ GenericValue runFunction(Engine self, Function fn, GenericValue[] values) {
 }
 
 enum Type {
+	i8,
 	i32,
 	Void,
 };
@@ -152,8 +153,8 @@ enum TypeModifier {
 TypeModifier toTypeModifier(string t) {
 	final switch (t) {
 		case "const": return TypeModifier.Const;
-		case "var": return TypeModifier.Variable;
-		case "*": return TypeModifier.Pointer;
+		case "var":   return TypeModifier.Variable;
+		case "*":     return TypeModifier.Pointer;
 	}
 }
 
@@ -167,11 +168,22 @@ struct RealType {
 	bool isVariable() { return typeModifiers.length > 0; }
 };
 
-Type toType(string type) {
+RealType toType(string type) {
 	switch (type) {
 		default:
 			assert(false, "could not convert '" ~ type ~ "' to type, unknown");
-		case "i32": return Type.i32;
+		case "i8":   return RealType([], Type.i8);
+		case "i32":  return RealType([], Type.i32);
+		case "void": return RealType([], Type.Void);
+	}
+}
+
+Type toUnderlyingType(string type) {
+	switch (type) {
+		default:
+			assert(false, "could not convert '" ~ type ~ "' to type, unknown");
+		case "i8":   return Type.i8;
+		case "i32":  return Type.i32;
 		case "void": return Type.Void;
 	}
 }
@@ -179,15 +191,43 @@ Type toType(string type) {
 private LLVMTypeRef toLlvmType(Type type) {
 	switch (type) {
 		default: assert(false, "could not convert type for: " ~ type.to!string);
-		case Type.i32: return LLVMInt32Type();
+		case Type.i8:   return LLVMInt8Type();
+		case Type.i32:  return LLVMInt32Type();
 		case Type.Void: return LLVMVoidType();
 	}
+}
+
+private LLVMTypeRef toLlvmType(RealType type) {
+	auto typeRef = toLlvmType(type.baseType);
+	foreach (i; type.typeModifiers) {
+		switch (i) {
+			default: continue;
+			case TypeModifier.Pointer: typeRef = LLVMPointerType(typeRef, 0);
+		}
+	}
+	return typeRef;
 }
 
 alias GenericValue = LLVMGenericValueRef;
 
 int ToI32(GenericValue value) {
 	return cast(int)LLVMGenericValueToInt(value, true);
+}
+
+uint8_t ToI8(GenericValue value) {
+	return cast(uint8_t)LLVMGenericValueToInt(value, true);
+}
+
+Value ToConstString(string str) {
+	return
+		Value(
+			LLVMConstString(
+				str.ptr,
+				cast(uint)str.length,
+				false // don't null terminate
+			)
+		)
+	;
 }
 
 Value ToConstI32(GenericValue value) {
@@ -218,8 +258,8 @@ GenericValue createValue(T)(T value) {
 }
 
 struct FunctionCreateInfo {
-	Type returnType;
-	Type[] parameters;
+	RealType returnType;
+	RealType[] parameters;
 	string label;
 	string[] attributes;
 	// bool variadic; no support in IMIV
@@ -302,6 +342,8 @@ struct Value {
 };
 
 Type typeOf(Value value) {
+	if (LLVMTypeOf(value.value) == LLVMInt8Type())
+		return Type.i8;
 	if (LLVMTypeOf(value.value) == LLVMInt32Type())
 		return Type.i32;
 	if (LLVMTypeOf(value.value) == LLVMVoidType())
@@ -394,9 +436,9 @@ Value buildCall(
 }
 
 Value buildAlloca(
-	ref InstructionBlock ib, Type type, string label
+	ref InstructionBlock ib, RealType type, string label
 ) {
-	return Value(LLVMBuildAlloca( ib.builder, type.toLlvmType, label.toStringz));
+	return Value(LLVMBuildAlloca(ib.builder, type.toLlvmType, label.toStringz));
 }
 
 Value buildLoad(

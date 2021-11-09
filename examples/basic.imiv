@@ -1,3 +1,5 @@
+$import imiv-stdc;
+
 [unittest,]
 fn testReturn := i32 || {
 	ret 5;
@@ -10,22 +12,22 @@ fn testArithmetic := i32 || {
 
 [unittest,]
 fn testArithmeticVariable := i32 || {
-	const g := i32 { 4 };
-	const g0 := i32 { 2 };
+	g := i32 const { 4 };
+	g0 := i32 const { 2 };
 	ret $((4 + 8 - g * g0) / g * (g+1)); # 1
 };
 
 [unittest,]
 fn testVariableDefinition := i32 || {
-	const g := i32 {0};
+	g := i32 const {0};
 	g := {5};
 	ret $(g - g + 5); # 5
 };
 
 [unittest,]
 fn testVariableDefinitionOnOther := i32 || {
-	const g := i32 {0};
-	const h := i32 {5};
+	g := i32 const {0};
+	h := i32 const {5};
 	g := {h};
 	ret g;
 };
@@ -49,27 +51,27 @@ fn testFnParams_Sum := i32 |x : i32, y : i32, z : i32,| {
 
 [unittest,]
 fn testFnParams := i32 || {
-	const g := i32 {6};
-	const h := i32 {4};
+	g := i32 const {6};
+	h := i32 const {4};
 	ret [testFnParams_Sum x:g y:h z:-5];
 };
 
 [unittest,]
 fn testFnParams2 := i32 || {
-	const g := i32 {6};
-	const h := i32 {4};
+	g := i32 const {6};
+	h := i32 const {4};
 	ret [testFnParams_Sum x:[testFnParams_Sum x:g y:h z:-10] y:g z:-1];
 };
 
 [unittest,]
 fn testFnParamsInlineArithmetic := i32 || {
-	const g := i32 { 6 };
+	g := i32 const { 6 };
 	ret [testFnParams_Sum x:$(4 - -4) y:$(4 * g) z:$(g + -32 + -1)];
 };
 
 [unittest,]
 fn testFnParamsInlineArithmetic2 := i32 || {
-	const g := i32 { 6 };
+	g := i32 const { 6 };
 	ret [
 		testFnParams_Sum
 			x:$(4 - -4)
@@ -80,21 +82,33 @@ fn testFnParamsInlineArithmetic2 := i32 || {
 
 [unittest,]
 fn testInlineArithmeticOnVarDef := i32 || {
-	const g := i32 { $(8 + 2) };
+	g := i32 const { $(8 + 2) };
 	g := { $(g - 5) };
 	ret g;
 };
 
 [unittest,]
 fn testDivByZero := i32 || {
-	const g := i32 { 6 };
+	g := i32 const { 6 };
 	ret $(1 / 0);
 };
 
 [unittest,]
 fn testOverflow := i32 || {
-	const g := i32 { 6 };
+	g := i32 const { 6 };
 	ret $(9 * 9 * 9 * 9 * 9 * 9 * 9999 * 9999 * 9999 * 9999 * 9999);
+};
+
+
+[unittest,]
+fn testsAreFinished := i32 || {
+	ret 999;
+};
+
+[unittest,]
+fn testStringLiteral := i32 || {
+	g := i8 * { "hello world" };
+	ret 0;
 };
 
 #[]
@@ -102,6 +116,9 @@ fn testOverflow := i32 || {
 #	ret [testFnParams_Sum x:4 y:2 z:0]; # rename to a if u dare
 #};
 
+fn main := i32 || {
+	ret 0;
+};
 ret 0;
 
 #[imiv println msg:{"hello world forever!", "and ever!",}];
